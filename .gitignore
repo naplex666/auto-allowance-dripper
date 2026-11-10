@@ -1,0 +1,9 @@
+# Foundry build artifacts
+out/
+cache/
+broadcast/
+
+# Secrets — never commit keys or env files
+.env
+.env.*
+*.key

@@ -1,0 +1,243 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Auto-Allowance Dripper — Live Demo</title>
+<style>
+  :root { color-scheme: dark; }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    font-family: -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    background: #0b1020; color: #eef1ff; padding: 20px 16px 40px;
+    max-width: 560px; margin: 0 auto;
+  }
+  h1 { font-size: 26px; line-height: 1.2; }
+  .sub { color: #9aa5ce; margin: 6px 0 18px; font-size: 15px; line-height: 1.45; }
+  .badge {
+    display: inline-block; padding: 3px 10px; border-radius: 999px;
+    font-size: 13px; font-weight: 700; letter-spacing: .04em;
+    background: #123d24; color: #4ade80; border: 1px solid #1f6f43;
+  }
+  .badge.paused { background: #3d1212; color: #f87171; border-color: #6f1f1f; }
+  .status {
+    background: #131a33; border: 1px solid #26305a; border-radius: 14px;
+    padding: 16px; font-size: 18px; line-height: 1.5; margin-bottom: 16px;
+  }
+  .status a { color: #7dd3fc; }
+  .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+  .card {
+    background: #111831; border: 1px solid #232c52; border-radius: 14px; padding: 14px;
+  }
+  .card.wide { grid-column: 1 / -1; }
+  .label { color: #9aa5ce; font-size: 13px; text-transform: uppercase; letter-spacing: .06em; }
+  .big { font-size: 34px; font-weight: 800; margin-top: 6px; word-break: break-all; }
+  .unit { font-size: 16px; font-weight: 600; color: #9aa5ce; }
+  .small { color: #9aa5ce; font-size: 13px; margin-top: 6px; line-height: 1.45; word-break: break-all; }
+  .count { font-size: 44px; }
+  footer { margin-top: 22px; color: #7782ab; font-size: 13px; line-height: 1.7; }
+  footer a { color: #7dd3fc; }
+  .err { color: #f87171; }
+</style>
+</head>
+<body>
+
+<h1>💧 Auto-Allowance Dripper</h1>
+<p class="sub">
+  A vault on <b>Base Sepolia</b> pays a fixed <b>0.001&nbsp;ETH</b> drip to a recipient
+  every <b>20 minutes</b> — driven by a Reactive contract on <b>Lasna</b> that wakes
+  itself on the protocol's Cron1000 clock. No server, no keeper, no button.
+  This page only <i>reads</i> the chains; it cannot move anything.
+</p>
+
+<p style="margin-bottom:14px"><span id="liveBadge" class="badge">● LOADING…</span></p>
+
+<div class="status" id="lastDrip">Last drip: loading…</div>
+
+<div class="grid">
+  <div class="card">
+    <div class="label">Recipient balance</div>
+    <div class="big"><span id="recipBal">—</span> <span class="unit">ETH</span></div>
+    <div class="small" id="recipAddr"></div>
+  </div>
+  <div class="card">
+    <div class="label">Drips paid out</div>
+    <div class="big count" id="dripsPaid">—</div>
+    <div class="small"><span id="dripsTriggered">—</span> triggered on Lasna</div>
+  </div>
+  <div class="card">
+    <div class="label">Vault balance</div>
+    <div class="big"><span id="vaultBal">—</span> <span class="unit">ETH</span></div>
+    <div class="small" id="dripsLeft"></div>
+  </div>
+  <div class="card">
+    <div class="label">Next drip in</div>
+    <div class="big" id="countdown">—</div>
+    <div class="small" id="nextAt"></div>
+  </div>
+  <div class="card wide">
+    <div class="label">How it runs itself</div>
+    <div class="small" style="font-size:15px; color:#c6cdea">
+      Cron1000 tick on Lasna → AllowanceDripper checks the schedule →
+      cross-chain callback → AllowanceVault releases the drip.
+      Dripper fuel: <span id="dripperBal">—</span> lREACT.
+      Refreshed <span id="refreshedAt">—</span>.
+    </div>
+  </div>
+</div>
+
+<footer>
+  Contracts (same address, two chains):
+  <a href="https://lasna.reactscan.net/address/0xf47827d1201e07F0FeB2c6bad7F499a86668f9bd" target="_blank" rel="noopener">Dripper on Lasna</a> ·
+  <a href="https://base-sepolia.blockscout.com/address/0xf47827d1201e07F0FeB2c6bad7F499a86668f9bd" target="_blank" rel="noopener">Vault on Base Sepolia</a><br>
+  Source verified on Sourcify (exact match):
+  <a href="https://repo.sourcify.dev/contracts/full_match/5318007/0xf47827d1201e07F0FeB2c6bad7F499a86668f9bd/" target="_blank" rel="noopener">Lasna</a> ·
+  <a href="https://repo.sourcify.dev/contracts/full_match/84532/0xf47827d1201e07F0FeB2c6bad7F499a86668f9bd/" target="_blank" rel="noopener">Base Sepolia</a><br>
+  Testnet demo — test tokens only, no real funds.
+</footer>
+
+<script>
+"use strict";
+/* ------------------------------------------------------------------ *
+ * Read-only live dashboard for the Auto-Allowance Dripper.
+ * Every value below comes from public RPCs / the Blockscout API at
+ * load time. There is no wallet connection and nothing here can sign
+ * or send a transaction.
+ * ------------------------------------------------------------------ */
+
+const VAULT_AND_DRIPPER = "0xf47827d1201e07F0FeB2c6bad7F499a86668f9bd"; // same address on both chains
+const BASE_RPC  = "https://sepolia.base.org";        // Base Sepolia (84532) — the vault
+const LASNA_RPC = "https://lasna-rpc.rnk.dev/";      // Lasna (5318007) — the dripper
+const BLOCKSCOUT = "https://base-sepolia.blockscout.com/api/v2";
+
+// Function selectors (verified against the deployed contracts with cast).
+const SEL = {
+  releasesPaid:      "0x084267be", // vault.releasesPaid()
+  releasesTriggered: "0x1e4f8272", // dripper.releasesTriggered()
+  nextRelease:       "0xa1571902", // dripper.nextRelease()
+  dripAmount:        "0x35a1529b", // dripAmount() on both
+  recipient:         "0x66d003ac", // vault.recipient()
+  paused:            "0x5c975abb"  // paused() on both
+};
+// topic0 of Released(address,uint256,uint256) — the vault's payout event.
+const RELEASED_TOPIC = "0x82e416ba72d10e709b5de7ac16f5f49ff1d94f22d55bf582d353d3c313a1e8dd";
+
+const $ = (id) => document.getElementById(id);
+let nextReleaseTs = null;   // unix seconds, from the dripper
+let dripAmountWei = null;   // from the vault
+
+async function rpc(url, method, params) {
+  const res = await fetch(url, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ jsonrpc: "2.0", id: 1, method, params })
+  });
+  const json = await res.json();
+  if (json.error) throw new Error(json.error.message || "RPC error");
+  return json.result;
+}
+const call = (url, data) => rpc(url, "eth_call", [{ to: VAULT_AND_DRIPPER, data }, "latest"]);
+const balanceOf = (url, addr) => rpc(url, "eth_getBalance", [addr, "latest"]);
+
+const toBig = (hex) => BigInt(hex);
+function fmtEth(wei, maxDp = 6) {
+  // Exact decimal rendering of a wei BigInt, trailing zeros trimmed.
+  const s = wei.toString().padStart(19, "0");
+  const intPart = s.slice(0, -18);
+  let frac = s.slice(-18, -18 + maxDp).replace(/0+$/, "");
+  return frac ? intPart + "." + frac : intPart;
+}
+const shortAddr = (a) => a.slice(0, 6) + "…" + a.slice(-4);
+
+async function refresh() {
+  try {
+    // --- Base Sepolia: the vault ---
+    const [paidHex, amountHex, recipHex, vaultPausedHex, vaultBalHex] = await Promise.all([
+      call(BASE_RPC, SEL.releasesPaid),
+      call(BASE_RPC, SEL.dripAmount),
+      call(BASE_RPC, SEL.recipient),
+      call(BASE_RPC, SEL.paused),
+      balanceOf(BASE_RPC, VAULT_AND_DRIPPER)
+    ]);
+    const recipient = "0x" + recipHex.slice(-40);
+    const recipBalHex = await balanceOf(BASE_RPC, recipient);
+
+    dripAmountWei = toBig(amountHex);
+    const vaultWei = toBig(vaultBalHex);
+    $("dripsPaid").textContent = toBig(paidHex).toString();
+    $("recipBal").textContent = fmtEth(toBig(recipBalHex));
+    $("recipAddr").textContent = shortAddr(recipient) + " on Base Sepolia";
+    $("vaultBal").textContent = fmtEth(vaultWei);
+    $("dripsLeft").textContent = dripAmountWei > 0n
+      ? "≈ " + (vaultWei / dripAmountWei).toString() + " drips left in the vault"
+      : "";
+
+    // --- Lasna: the dripper ---
+    const [trigHex, nextHex, dripBalHex, dripPausedHex] = await Promise.all([
+      call(LASNA_RPC, SEL.releasesTriggered),
+      call(LASNA_RPC, SEL.nextRelease),
+      balanceOf(LASNA_RPC, VAULT_AND_DRIPPER),
+      call(LASNA_RPC, SEL.paused)
+    ]);
+    $("dripsTriggered").textContent = toBig(trigHex).toString();
+    $("dripperBal").textContent = fmtEth(toBig(dripBalHex), 4);
+    nextReleaseTs = Number(toBig(nextHex));
+
+    const paused = toBig(vaultPausedHex) !== 0n || toBig(dripPausedHex) !== 0n;
+    const badge = $("liveBadge");
+    badge.textContent = paused ? "❚❚ PAUSED" : "● LIVE — RUNNING BY ITSELF";
+    badge.className = "badge" + (paused ? " paused" : "");
+
+    $("refreshedAt").textContent = new Date().toLocaleTimeString();
+    tickCountdown();
+    refreshLastDrip();
+  } catch (e) {
+    $("lastDrip").innerHTML = '<span class="err">Could not load chain state (' +
+      e.message + "). Retrying automatically…</span>";
+  }
+}
+
+async function refreshLastDrip() {
+  // Newest Released event from the vault, via Blockscout's public API.
+  try {
+    const res = await fetch(BLOCKSCOUT + "/addresses/" + VAULT_AND_DRIPPER + "/logs");
+    const json = await res.json();
+    const rel = (json.items || []).filter(
+      (it) => it.topics && it.topics[0] === RELEASED_TOPIC
+    );
+    if (!rel.length) { $("lastDrip").textContent = "Last drip: none yet — the first one is on its way."; return; }
+    rel.sort((a, b) => (b.block_number || 0) - (a.block_number || 0));
+    const last = rel[0];
+    const amount = fmtEth(toBig(last.data)); // data = the paid amount (uint256)
+    const when = new Date(last.block_timestamp).toLocaleString();
+    $("lastDrip").innerHTML =
+      "Last drip: <b>" + amount + " ETH</b> sent automatically at <b>" + when + "</b> — " +
+      '<a href="https://base-sepolia.blockscout.com/tx/' + last.transaction_hash +
+      '" target="_blank" rel="noopener">see the callback transaction</a>';
+  } catch (e) {
+    // Non-fatal: the counters above still tell the story.
+    $("lastDrip").textContent = "Last drip: see the payout counter — the explorer lookup hiccuped, chain state above is live.";
+  }
+}
+
+function tickCountdown() {
+  if (nextReleaseTs === null) return;
+  const now = Math.floor(Date.now() / 1000);
+  const left = nextReleaseTs - now;
+  if (left <= 0) {
+    $("countdown").textContent = "due now";
+    $("nextAt").textContent = "Waiting for the next Cron1000 tick (fires roughly every 17 minutes) — the drip lands right after it.";
+  } else {
+    const m = Math.floor(left / 60), s = left % 60;
+    $("countdown").textContent = m + ":" + String(s).padStart(2, "0");
+    $("nextAt").textContent = "Scheduled for " + new Date(nextReleaseTs * 1000).toLocaleTimeString() +
+      " — then the next Cron1000 tick triggers it.";
+  }
+}
+
+refresh();
+setInterval(refresh, 15000);      // re-read both chains every 15 s
+setInterval(tickCountdown, 1000); // smooth countdown between refreshes
+</script>
+</body>
+</html>

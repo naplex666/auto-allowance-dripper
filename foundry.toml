@@ -1,0 +1,12 @@
+[profile.default]
+src = "src"
+out = "out"
+libs = ["lib"]
+solc = "0.8.29"
+remappings = [
+    "@reactive/=lib/reactive-lib-omni/src/",
+    "forge-std/=lib/forge-std/src/",
+]
+
+# Auto-Allowance Dripper — Reactive Omni Buildathon (Set It and Forget It track)
+# Reactive side: Lasna testnet (5318007). Destination: Base Sepolia (84532).
